@@ -63,19 +63,24 @@ RUN echo no | avdmanager create avd \
       -k "${SYSTEM_IMAGE}" \
       -d "${DEVICE_PROFILE}"
 
-# ---------- Pre-create userdata-qemu.img (mirrors bootstrap.ts logic) ----------
-RUN AVD_DATA_DIR="${ANDROID_AVD_HOME}/${AVD_ID}.avd" && \
+# ---------- Pre-create userdata-qemu.img ----------
+# When SKIP_SNAPSHOT=true (CI two-phase), skip this — the emulator creates its
+# own userdata (~160 MB) during the KVM boot in Phase 2, saving ~2 GB of image size.
+# When building standalone, create a small 512 MB partition (not 2048 MB).
+RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
+    AVD_DATA_DIR="${ANDROID_AVD_HOME}/${AVD_ID}.avd" && \
     rm -f "${AVD_DATA_DIR}/userdata-qemu.img" "${AVD_DATA_DIR}/userdata-qemu.img.qcow2" && \
-    truncate -s 2048M "${AVD_DATA_DIR}/userdata-qemu.img" && \
-    mkfs.ext4 -q -F "${AVD_DATA_DIR}/userdata-qemu.img"
+    truncate -s 512M "${AVD_DATA_DIR}/userdata-qemu.img" && \
+    mkfs.ext4 -q -F "${AVD_DATA_DIR}/userdata-qemu.img"; \
+    else echo "SKIP_SNAPSHOT=true: skipping userdata creation (CI two-phase build)"; fi
 
 # ---------- Configure AVD for snapshot support ----------
 RUN AVD_CONFIG="${ANDROID_AVD_HOME}/${AVD_ID}.avd/config.ini" && \
     if [ -f "$AVD_CONFIG" ]; then \
       if grep -q "^disk.dataPartition.size=" "$AVD_CONFIG"; then \
-        sed -i "s/^disk.dataPartition.size=.*/disk.dataPartition.size=2048m/" "$AVD_CONFIG"; \
+        sed -i "s/^disk.dataPartition.size=.*/disk.dataPartition.size=512m/" "$AVD_CONFIG"; \
       else \
-        echo "disk.dataPartition.size=2048m" >> "$AVD_CONFIG"; \
+        echo "disk.dataPartition.size=512m" >> "$AVD_CONFIG"; \
       fi && \
       if grep -q "^fastboot.forceColdBoot=" "$AVD_CONFIG"; then \
         sed -i "s/^fastboot.forceColdBoot=.*/fastboot.forceColdBoot=no/" "$AVD_CONFIG"; \
@@ -94,7 +99,7 @@ RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
     nohup emulator -avd "${AVD_ID}" \
       -no-accel -no-window -no-audio -no-metrics \
       -gpu guest \
-      -partition-size 2048 -memory 1024 \
+      -partition-size 512 -memory 1024 \
       > /tmp/emulator-boot.log 2>&1 & \
     EMU_PID=$! && \
     echo "Waiting for emulator boot (PID=${EMU_PID})..." && \
@@ -132,7 +137,13 @@ RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
     cat "${ANDROID_SDK_ROOT}/.mag-prebaked"; \
     else echo "SKIP_SNAPSHOT=true: skipping sentinel write (CI two-phase build)"; fi
 
-# Clean up build artifacts
-RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
-    rm -f /tmp/emulator-boot.log; \
-    fi
+# ---------- Clean up to minimize image size ----------
+# SDK cache, temp files, and unnecessary build artifacts.
+# The emulator + system-image + snapshot are kept; everything else goes.
+RUN rm -rf /tmp/emulator-boot.log \
+           "${ANDROID_SDK_ROOT}/.android/cache" \
+           "${ANDROID_SDK_ROOT}/.android/analytics*" \
+           "${ANDROID_SDK_ROOT}/cmdline-tools/latest/lib/external/com/google" \
+           /tmp/* /var/tmp/* /root/.cache 2>/dev/null || true && \
+    echo "==> Disk usage after cleanup:" && \
+    du -sh "${ANDROID_SDK_ROOT}" "${ANDROID_AVD_HOME}" 2>/dev/null || true

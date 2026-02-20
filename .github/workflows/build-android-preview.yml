@@ -98,6 +98,15 @@ jobs:
           docker run --rm android-preview-final:local \
             ls -la "/opt/android-sdk-linux/avd/${{ env.AVD_ID }}.avd/snapshots/default_boot/"
 
+          echo ""
+          echo "==> Image disk usage (must be < 10 GB for Daytona)..."
+          docker run --rm android-preview-final:local \
+            bash -c "du -sh /opt/android-sdk-linux && du -sh /opt/android-sdk-linux/avd && df -h /"
+
+          echo ""
+          echo "==> Docker image size..."
+          docker images android-preview-final:local --format "{{.Size}}"
+
       # ── Phase 4: Tag and push ──
       - name: Generate image tags
         id: tags

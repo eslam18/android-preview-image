@@ -44,7 +44,7 @@ echo "==> Starting emulator..."
 nohup emulator -avd "${AVD_ID}" \
   ${ACCEL_FLAG} -no-window -no-audio -no-metrics \
   -gpu guest \
-  -partition-size 2048 -memory 1024 \
+  -partition-size 512 -memory 1024 \
   > /tmp/emulator-boot.log 2>&1 &
 EMU_PID=$!
 echo "    Emulator PID=${EMU_PID}"
@@ -101,6 +101,26 @@ printf '{"avdId":"%s","apiLevel":%s,"arch":"x86_64","systemImage":"%s"}\n' \
 echo "==> Sentinel written to ${SENTINEL_PATH}"
 cat "${SENTINEL_PATH}"
 
-# ---------- Clean up ----------
-rm -f /tmp/emulator-boot.log
+# ---------- Clean up to minimize committed image size ----------
+echo "==> Cleaning up to minimize image size..."
+# Remove raw userdata-qemu.img if the emulator created a qcow2 overlay
+# (the emulator auto-creates what it needs from the system image)
+AVD_RAW_USERDATA="${AVD_DATA_DIR}/userdata-qemu.img"
+if [ -f "${AVD_DATA_DIR}/userdata-qemu.img.qcow2" ] && [ -f "$AVD_RAW_USERDATA" ]; then
+  echo "  Removing raw userdata-qemu.img (qcow2 overlay exists)"
+  rm -f "$AVD_RAW_USERDATA"
+fi
+
+# Remove SDK caches, temp files, analytics, and build artifacts
+rm -rf /tmp/emulator-boot.log \
+       "${ANDROID_SDK_ROOT}/.android/cache" \
+       "${ANDROID_SDK_ROOT}/.android/analytics"* \
+       /tmp/* /var/tmp/* /root/.cache 2>/dev/null || true
+
+echo "==> Final disk usage:"
+du -sh "${ANDROID_SDK_ROOT}" 2>/dev/null || true
+du -sh "${AVD_DATA_DIR}" 2>/dev/null || true
+du -sh "${SNAPSHOT_DIR}" 2>/dev/null || true
+df -h / 2>/dev/null || true
+
 echo "==> Done — container is ready for docker commit"
