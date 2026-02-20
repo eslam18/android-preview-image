@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"  # 5 minutes default (KVM is fast)
+BOOT_TIMEOUT="${BOOT_TIMEOUT:-900}"  # 15 minutes (software emulation is slow)
 POLL_INTERVAL=3
 
 # ---------- Resolve variables ----------
@@ -30,13 +30,18 @@ echo "    AVD_ID=${AVD_ID}"
 echo "    API_LEVEL=${API_LEVEL}"
 echo "    AVD_DATA_DIR=${AVD_DATA_DIR}"
 
-# ---------- Detect KVM ----------
+# ---------- Always use software emulation ----------
+# IMPORTANT: We intentionally use -no-accel even if KVM is available.
+# The Quick Boot snapshot stores CPU state that is specific to the emulation
+# mode (KVM vs TCG/software). Daytona sandboxes do NOT have usable KVM, so
+# the snapshot MUST be created with -no-accel to be resumable at runtime.
+# Using KVM here would create a snapshot that silently falls back to cold
+# boot (10-15+ minutes) when resumed without KVM.
 ACCEL_FLAG="-no-accel"
 if [ -w /dev/kvm ]; then
-  echo "==> KVM detected and writable — using hardware acceleration"
-  ACCEL_FLAG="-accel on"
+  echo "==> KVM detected but NOT using it — snapshot must be -no-accel compatible for Daytona"
 else
-  echo "==> KVM not available — falling back to software emulation (slow)"
+  echo "==> KVM not available — using software emulation"
 fi
 
 # ---------- Start emulator ----------
