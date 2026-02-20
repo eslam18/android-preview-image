@@ -83,8 +83,32 @@ jobs:
           fi
 
           echo "==> Committing container as final image..."
-          docker commit "${CONTAINER_ID}" android-preview-final:local
+          docker commit "${CONTAINER_ID}" android-preview-committed:local
           docker rm "${CONTAINER_ID}"
+
+      # ── Phase 2.5: Squash image into a single layer ──
+      # Docker layers are additive: deleted files still occupy space in earlier
+      # layers. Export + import squashes everything into one layer, physically
+      # removing dead files (cmdline-tools, build-tools, caches) and saving ~1 GB.
+      - name: "Phase 2.5: Squash image layers"
+        run: |
+          echo "==> Pre-squash image size:"
+          docker images android-preview-committed:local --format "{{.Size}}"
+
+          SQUASH_CID=$(docker create android-preview-committed:local)
+          docker export "$SQUASH_CID" | docker import \
+            --change 'ENV ANDROID_SDK_ROOT=/opt/android-sdk-linux' \
+            --change 'ENV ANDROID_HOME=/opt/android-sdk-linux' \
+            --change 'ENV ANDROID_AVD_HOME=/opt/android-sdk-linux/avd' \
+            --change 'ENV DEBIAN_FRONTEND=noninteractive' \
+            --change 'ENV PATH=/opt/android-sdk-linux/platform-tools:/opt/android-sdk-linux/emulator:/usr/lib/dart/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+            --change 'WORKDIR /root' \
+            --change 'CMD ["bash"]' \
+            - android-preview-final:local
+          docker rm "$SQUASH_CID"
+
+          echo "==> Post-squash image size:"
+          docker images android-preview-final:local --format "{{.Size}}"
 
       # ── Phase 3: Verify sentinel and snapshot in final image ──
       - name: "Phase 3: Verify final image"
@@ -104,7 +128,7 @@ jobs:
             bash -c "du -sh /opt/android-sdk-linux && du -sh /opt/android-sdk-linux/avd && df -h /"
 
           echo ""
-          echo "==> Docker image size..."
+          echo "==> Docker image size (must be < 10 GB for Daytona)..."
           docker images android-preview-final:local --format "{{.Size}}"
 
       # ── Phase 4: Tag and push ──
