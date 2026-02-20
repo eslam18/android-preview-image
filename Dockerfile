@@ -1,6 +1,6 @@
 # Dockerfile.android-preview
 #
-# Pre-baked Android emulator image with a fully-booted snapshot.
+# Pre-baked Android emulator image with a -no-accel compatible snapshot.
 # Sandboxes resume from snapshot instead of cold-booting, cutting
 # start time from 10+ minutes to ~60-90 seconds.
 #
