@@ -31,18 +31,16 @@ ENV ANDROID_SDK_ROOT=/opt/android-sdk-linux \
 
 ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator:${PATH}"
 
-# ---------- Install prerequisites ----------
+# ---------- Install minimal prerequisites ----------
+# Flutter base already has JDK, curl, unzip. Only add procps (for ps/kill)
+# and e2fsprogs (for mkfs.ext4) when doing standalone build.
 USER root
 RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends \
-      openjdk-17-jre-headless \
-      unzip \
-      curl \
-      e2fsprogs \
-      procps && \
+    apt-get install -y --no-install-recommends procps && \
     rm -rf /var/lib/apt/lists/*
 
 # ---------- Install Android SDK components ----------
+# Install emulator + system image. sdkmanager comes from the Flutter base image.
 RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" "${ANDROID_SDK_ROOT}/platform-tools" "${ANDROID_SDK_ROOT}/emulator" "${ANDROID_AVD_HOME}" && \
     if [ ! -x "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]; then \
       TMP_ZIP="/tmp/cmdlinetools.zip" && \
@@ -66,7 +64,6 @@ RUN echo no | avdmanager create avd \
 # ---------- Pre-create userdata-qemu.img ----------
 # When SKIP_SNAPSHOT=true (CI two-phase), skip this — the emulator creates its
 # own userdata (~160 MB) during the KVM boot in Phase 2, saving ~2 GB of image size.
-# When building standalone, create a small 512 MB partition (not 2048 MB).
 RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
     AVD_DATA_DIR="${ANDROID_AVD_HOME}/${AVD_ID}.avd" && \
     rm -f "${AVD_DATA_DIR}/userdata-qemu.img" "${AVD_DATA_DIR}/userdata-qemu.img.qcow2" && \
@@ -90,8 +87,6 @@ RUN AVD_CONFIG="${ANDROID_AVD_HOME}/${AVD_ID}.avd/config.ini" && \
     fi
 
 # ---------- Boot emulator to create Quick Boot snapshot ----------
-# This is a one-time CI cost (up to 15 minutes under software emulation).
-# The emulator boots fully, then `adb emu kill` triggers a snapshot save.
 # When SKIP_SNAPSHOT=true (CI two-phase build), this step is skipped;
 # the CI workflow boots with KVM and commits the snapshot separately.
 RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
@@ -137,13 +132,17 @@ RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
     cat "${ANDROID_SDK_ROOT}/.mag-prebaked"; \
     else echo "SKIP_SNAPSHOT=true: skipping sentinel write (CI two-phase build)"; fi
 
-# ---------- Clean up to minimize image size ----------
-# SDK cache, temp files, and unnecessary build artifacts.
-# The emulator + system-image + snapshot are kept; everything else goes.
-RUN rm -rf /tmp/emulator-boot.log \
+# ---------- Aggressive cleanup to minimize image size ----------
+# Remove everything not needed at runtime: cmdline-tools, SDK caches,
+# build-tools, source.properties archives, apt cache, etc.
+# Keep only: emulator, platform-tools, system-images, avd data.
+RUN rm -rf "${ANDROID_SDK_ROOT}/cmdline-tools" \
            "${ANDROID_SDK_ROOT}/.android/cache" \
-           "${ANDROID_SDK_ROOT}/.android/analytics*" \
-           "${ANDROID_SDK_ROOT}/cmdline-tools/latest/lib/external/com/google" \
-           /tmp/* /var/tmp/* /root/.cache 2>/dev/null || true && \
+           "${ANDROID_SDK_ROOT}/.android/analytics"* \
+           "${ANDROID_SDK_ROOT}/build-tools" \
+           "${ANDROID_SDK_ROOT}/licenses" \
+           "${ANDROID_SDK_ROOT}/patcher" \
+           /tmp/* /var/tmp/* /root/.cache \
+           /var/lib/apt/lists/* 2>/dev/null || true && \
     echo "==> Disk usage after cleanup:" && \
     du -sh "${ANDROID_SDK_ROOT}" "${ANDROID_AVD_HOME}" 2>/dev/null || true
