@@ -4,19 +4,16 @@
 # Sandboxes resume from snapshot instead of cold-booting, cutting
 # start time from 10+ minutes to ~60-90 seconds.
 #
-# Build:
-#   docker build -f Dockerfile.android-preview \
-#     --build-arg API_LEVEL=34 \
-#     --build-arg SYSTEM_IMAGE=system-images;android-34;default;x86_64 \
-#     --build-arg AVD_ID=mag_mobile_preview_api_34 \
-#     --build-arg DEVICE_PROFILE=pixel_6 \
-#     -t mag-android-preview:latest .
+# Uses ubuntu:22.04 instead of cirruslabs/flutter:stable to save ~3GB.
+# Flutter is installed from the official tarball (~1.5GB) rather than
+# the bloated Cirrus Labs image (~4.9GB) which bundles Chrome, Gradle,
+# extra build-tools, etc. that aren't needed for mobile preview.
 #
 # All paths match env.ts constants:
 #   SDK at /opt/android-sdk-linux
 #   AVDs at /opt/android-sdk-linux/avd
 
-FROM ghcr.io/cirruslabs/flutter:stable
+FROM ubuntu:22.04
 
 ARG API_LEVEL=34
 ARG SYSTEM_IMAGE="system-images;android-${API_LEVEL};default;x86_64"
@@ -27,28 +24,48 @@ ARG SKIP_SNAPSHOT=false
 ENV ANDROID_SDK_ROOT=/opt/android-sdk-linux \
     ANDROID_HOME=/opt/android-sdk-linux \
     ANDROID_AVD_HOME=/opt/android-sdk-linux/avd \
+    FLUTTER_HOME=/opt/flutter \
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
     DEBIAN_FRONTEND=noninteractive
 
-ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator:${PATH}"
+ENV PATH="${FLUTTER_HOME}/bin:${FLUTTER_HOME}/bin/cache/dart-sdk/bin:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# ---------- Install minimal prerequisites ----------
-# Flutter base already has JDK, curl, unzip. Only add procps (for ps/kill)
-# and e2fsprogs (for mkfs.ext4) when doing standalone build.
-USER root
+# ---------- Install system prerequisites ----------
 RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends procps && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+      openjdk-17-jdk-headless \
+      curl \
+      unzip \
+      git \
+      procps \
+      python3 \
+      xz-utils \
+      libglu1-mesa \
+      libpulse0 \
+      libasound2 \
+      libx11-6 \
+      libxcomposite1 \
+      libxcursor1 \
+      libxi6 \
+      libxtst6 \
+      libnss3 \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- Install Flutter SDK ----------
+# Shallow clone (~700MB) of the stable channel. Much smaller than the
+# cirruslabs/flutter:stable image (~4.9GB) which bundles Chrome, Gradle, etc.
+RUN git clone --depth 1 --branch stable https://github.com/flutter/flutter.git ${FLUTTER_HOME} && \
+    flutter config --no-analytics && \
+    dart --disable-analytics && \
+    flutter --version
 
 # ---------- Install Android SDK components ----------
-# Install emulator + system image. sdkmanager comes from the Flutter base image.
 RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" "${ANDROID_SDK_ROOT}/platform-tools" "${ANDROID_SDK_ROOT}/emulator" "${ANDROID_AVD_HOME}" && \
-    if [ ! -x "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]; then \
-      TMP_ZIP="/tmp/cmdlinetools.zip" && \
-      curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o "$TMP_ZIP" && \
-      unzip -q -o "$TMP_ZIP" -d "${ANDROID_SDK_ROOT}/cmdline-tools/tmp" && \
-      mv "${ANDROID_SDK_ROOT}/cmdline-tools/tmp/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" && \
-      rm -rf "${ANDROID_SDK_ROOT}/cmdline-tools/tmp" "$TMP_ZIP"; \
-    fi
+    curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdlinetools.zip && \
+    unzip -q -o /tmp/cmdlinetools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools/tmp" && \
+    mv "${ANDROID_SDK_ROOT}/cmdline-tools/tmp/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" && \
+    rm -rf "${ANDROID_SDK_ROOT}/cmdline-tools/tmp" /tmp/cmdlinetools.zip
 
 RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true && \
     sdkmanager --install "platform-tools" "emulator" && \
@@ -62,8 +79,6 @@ RUN echo no | avdmanager create avd \
       -d "${DEVICE_PROFILE}"
 
 # ---------- Pre-create userdata-qemu.img ----------
-# When SKIP_SNAPSHOT=true (CI two-phase), skip this — the emulator creates its
-# own userdata (~160 MB) during the KVM boot in Phase 2, saving ~2 GB of image size.
 RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
     AVD_DATA_DIR="${ANDROID_AVD_HOME}/${AVD_ID}.avd" && \
     rm -f "${AVD_DATA_DIR}/userdata-qemu.img" "${AVD_DATA_DIR}/userdata-qemu.img.qcow2" && \
@@ -87,8 +102,6 @@ RUN AVD_CONFIG="${ANDROID_AVD_HOME}/${AVD_ID}.avd/config.ini" && \
     fi
 
 # ---------- Boot emulator to create Quick Boot snapshot ----------
-# When SKIP_SNAPSHOT=true (CI two-phase build), this step is skipped;
-# the CI workflow boots with KVM and commits the snapshot separately.
 RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
     set -e && \
     nohup emulator -avd "${AVD_ID}" \
@@ -132,17 +145,20 @@ RUN if [ "${SKIP_SNAPSHOT}" != "true" ]; then \
     cat "${ANDROID_SDK_ROOT}/.mag-prebaked"; \
     else echo "SKIP_SNAPSHOT=true: skipping sentinel write (CI two-phase build)"; fi
 
-# ---------- Aggressive cleanup to minimize image size ----------
-# Remove everything not needed at runtime: cmdline-tools, SDK caches,
-# build-tools, source.properties archives, apt cache, etc.
-# Keep only: emulator, platform-tools, system-images, avd data.
+# ---------- Cleanup to minimize image size ----------
+# Remove cmdline-tools (not needed at runtime — sentinel skips bootstrap),
+# SDK caches, licenses, and temp files.
 RUN rm -rf "${ANDROID_SDK_ROOT}/cmdline-tools" \
            "${ANDROID_SDK_ROOT}/.android/cache" \
            "${ANDROID_SDK_ROOT}/.android/analytics"* \
            "${ANDROID_SDK_ROOT}/build-tools" \
            "${ANDROID_SDK_ROOT}/licenses" \
            "${ANDROID_SDK_ROOT}/patcher" \
+           "${FLUTTER_HOME}/.pub-cache" \
+           "${FLUTTER_HOME}/bin/cache/artifacts/engine/linux-x64" \
+           "${FLUTTER_HOME}/bin/cache/artifacts/engine/linux-x64-profile" \
+           "${FLUTTER_HOME}/bin/cache/artifacts/engine/linux-x64-release" \
            /tmp/* /var/tmp/* /root/.cache \
            /var/lib/apt/lists/* 2>/dev/null || true && \
     echo "==> Disk usage after cleanup:" && \
-    du -sh "${ANDROID_SDK_ROOT}" "${ANDROID_AVD_HOME}" 2>/dev/null || true
+    du -sh "${ANDROID_SDK_ROOT}" "${ANDROID_AVD_HOME}" "${FLUTTER_HOME}" 2>/dev/null || true

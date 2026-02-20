@@ -100,8 +100,10 @@ jobs:
             --change 'ENV ANDROID_SDK_ROOT=/opt/android-sdk-linux' \
             --change 'ENV ANDROID_HOME=/opt/android-sdk-linux' \
             --change 'ENV ANDROID_AVD_HOME=/opt/android-sdk-linux/avd' \
+            --change 'ENV FLUTTER_HOME=/opt/flutter' \
+            --change 'ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64' \
             --change 'ENV DEBIAN_FRONTEND=noninteractive' \
-            --change 'ENV PATH=/opt/android-sdk-linux/platform-tools:/opt/android-sdk-linux/emulator:/usr/lib/dart/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+            --change 'ENV PATH=/opt/flutter/bin:/opt/flutter/bin/cache/dart-sdk/bin:/opt/android-sdk-linux/cmdline-tools/latest/bin:/opt/android-sdk-linux/platform-tools:/opt/android-sdk-linux/emulator:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
             --change 'WORKDIR /root' \
             --change 'CMD ["bash"]' \
             - android-preview-final:local
@@ -123,9 +125,14 @@ jobs:
             ls -la "/opt/android-sdk-linux/avd/${{ env.AVD_ID }}.avd/snapshots/default_boot/"
 
           echo ""
+          echo "==> Checking Flutter SDK..."
+          docker run --rm android-preview-final:local \
+            bash -c "flutter --version && which flutter && which dart"
+
+          echo ""
           echo "==> Image disk usage (must be < 10 GB for Daytona)..."
           docker run --rm android-preview-final:local \
-            bash -c "du -sh /opt/android-sdk-linux && du -sh /opt/android-sdk-linux/avd && df -h /"
+            bash -c "du -sh /opt/android-sdk-linux && du -sh /opt/android-sdk-linux/avd && du -sh /opt/flutter && df -h /"
 
           echo ""
           echo "==> Docker image size (must be < 10 GB for Daytona)..."
