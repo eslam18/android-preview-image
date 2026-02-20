@@ -3,7 +3,7 @@ name: Build Android Preview Image
 on:
   push:
     branches: [main]
-    paths: [Dockerfile]
+    paths: [Dockerfile, "ci/**"]
   workflow_dispatch:
   schedule:
     - cron: "0 6 * * 1" # Weekly on Monday at 06:00 UTC
